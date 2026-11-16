@@ -26,6 +26,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_artifact: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
 
     permissions:
       contents: write
@@ -77,6 +79,7 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: public
+          name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
 
   deploy:
     needs: build
@@ -94,3 +97,5 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: ${{ needs.build.outputs.pages_artifact }}
