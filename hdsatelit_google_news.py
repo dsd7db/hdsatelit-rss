@@ -1,4 +1,4 @@
-"""Flux RSS HD Satelit folosind rezultatele Google News, fara accesarea directa a site-ului."""
+"""Flux RSS HD Satelit din feedul nativ, cu Google News ca rezerva."""
 import csv
 import json
 import sys
@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -58,7 +58,7 @@ def get_with_retry(session, url):
         time.sleep(delay)
 
 
-def fetch_articles():
+def fetch_google_articles():
     errors = []
     with requests.Session() as session:
         session.headers.update({
@@ -104,6 +104,57 @@ def fetch_articles():
     raise RuntimeError("Nu s-au obtinut articole de la Google News. " + " | ".join(errors))
 
 
+def parse_native_articles(content):
+    channel = ET.fromstring(content).find("channel")
+    if channel is None:
+        raise ValueError("Raspunsul nu contine un canal RSS")
+    articles = []
+    for item in channel.findall("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        parsed = urlsplit(link)
+        if not title or parsed.scheme != "https" or parsed.hostname not in (
+            "www.hdsatelit.com", "hdsatelit.com"
+        ):
+            continue
+        try:
+            published = parsedate_to_datetime(item.findtext("pubDate"))
+            if published.tzinfo is None:
+                raise ValueError("Data fara fus orar")
+        except (TypeError, ValueError, IndexError):
+            continue
+        articles.append({
+            "url": link,
+            "title": title,
+            "published": published.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        })
+    if not articles:
+        raise ValueError("Fluxul nativ nu contine articole valide")
+    return articles
+
+
+def fetch_articles():
+    articles = {}
+    with requests.Session() as session:
+        session.headers.update({"User-Agent": "HD-Satelit-RSS-Hobby/1.0"})
+        for page in (1, 2):
+            url = "https://www.hdsatelit.com/feed/"
+            if page > 1:
+                url += f"?paged={page}"
+            try:
+                response = get_with_retry(session, url)
+                for article in parse_native_articles(response.content):
+                    articles[article["url"]] = article
+                print(f"Flux nativ pagina {page}: {len(articles)} articole", flush=True)
+            except (requests.RequestException, ET.ParseError, ValueError) as exc:
+                print(f"Eroare flux nativ pagina {page}: {exc}", flush=True)
+                break
+    if articles:
+        return list(articles.values())
+    print("Flux nativ indisponibil; folosesc Google News ca rezerva", flush=True)
+    return fetch_google_articles()
+
+
 def load_history():
     if not STATE_FILE.exists():
         return {}
@@ -117,9 +168,9 @@ def write_rss(articles):
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
     for tag, value in [
-        ("title", "HD Satelit - agregare Google News"),
+        ("title", "HD Satelit - RSS personal"),
         ("link", "https://www.hdsatelit.com/"),
-        ("description", "Titluri HD Satelit preluate din indexul Google News; pot lipsi articole."),
+        ("description", "Titluri si linkuri HD Satelit din feedul nativ; Google News ca rezerva."),
         ("language", "ro-RO"),
         ("lastBuildDate", format_datetime(datetime.now(timezone.utc))),
     ]:
@@ -130,7 +181,7 @@ def write_rss(articles):
         ET.SubElement(item, "title").text = article["title"]
         ET.SubElement(item, "link").text = article["url"]
         ET.SubElement(item, "guid", isPermaLink="true").text = article["url"]
-        ET.SubElement(item, "description").text = "Deschide articolul HD Satelit prin Google News."
+        ET.SubElement(item, "description").text = "Citeste articolul HD Satelit."
         published = datetime.fromisoformat(article["published"])
         ET.SubElement(item, "pubDate").text = format_datetime(published)
 
@@ -142,6 +193,12 @@ def write_rss(articles):
 def main():
     fetched = fetch_articles()
     saved = load_history()
+    # Inlocuim intrarile Google pentru acelasi titlu cu linkurile directe.
+    direct_titles = {a["title"].casefold() for a in fetched
+                     if urlsplit(a["url"]).hostname in ("www.hdsatelit.com", "hdsatelit.com")}
+    saved = {key: a for key, a in saved.items()
+             if not (urlsplit(a["url"]).hostname == "news.google.com"
+                     and a["title"].casefold() in direct_titles)}
     new_count = 0
     for article in fetched:
         key = article["url"]
@@ -159,7 +216,7 @@ def main():
     write_rss(sorted_articles)
     with CSV_FILE.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["Titlu", "Link Google News", "Data publicarii UTC"])
+        writer.writerow(["Titlu", "Link", "Data publicarii UTC"])
         for article in sorted_articles:
             writer.writerow([article["title"], article["url"], article["published"]])
 
