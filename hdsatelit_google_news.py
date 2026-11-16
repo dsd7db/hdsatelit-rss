@@ -2,6 +2,7 @@
 import csv
 import json
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
@@ -41,6 +42,22 @@ def as_utc(value):
         return datetime.now(timezone.utc)
 
 
+def get_with_retry(session, url):
+    for attempt in range(3):
+        try:
+            response = session.get(url, timeout=30)
+            if response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                response.raise_for_status()
+                return response
+            response.close()
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == 2:
+                raise
+        delay = 2 ** (attempt + 1)
+        print(f"Sursa temporar indisponibila; reincercare in {delay}s", flush=True)
+        time.sleep(delay)
+
+
 def fetch_articles():
     errors = []
     with requests.Session() as session:
@@ -52,8 +69,7 @@ def fetch_articles():
             url = google_news_url(query)
             print("Interogare Google News:", query, flush=True)
             try:
-                response = session.get(url, timeout=30)
-                response.raise_for_status()
+                response = get_with_retry(session, url)
                 channel = ET.fromstring(response.content).find("channel")
                 if channel is None:
                     raise ValueError("Raspunsul nu contine un canal RSS")

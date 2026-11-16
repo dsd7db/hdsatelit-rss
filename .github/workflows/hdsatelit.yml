@@ -33,6 +33,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # Relansarile trebuie sa includa istoricul salvat de executarile ulterioare.
+          ref: main
 
       - name: Setup Python
         uses: actions/setup-python@v6
